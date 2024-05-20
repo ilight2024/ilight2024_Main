@@ -5,7 +5,8 @@ Hardware: ESP32 DEVKIT C or ESP32 DEVKIT V1, Liminal Minimal PCB, VL53L1X ToF se
 Author: Brandon Tay Kaiheng (Contact: brandontay6@gmail.com)
 */
 
-// Comment out to disable debug prints
+// Comment out to disable debug prints 
+// Debug prints will slow down actual task execution due to multiple cores competing for single UART resource
 #define DEBUG
 
 #include <Arduino.h>
@@ -14,7 +15,7 @@ Author: Brandon Tay Kaiheng (Contact: brandontay6@gmail.com)
 
 // Global Variables
 // Number of sensors connected (adjust accordingly)
-const uint8_t sensor_count = 2;
+const uint8_t sensor_count = 1;
 
 // PWM parameters
 const uint32_t PWM_freq = 5000; // PWM freq in Hz
@@ -28,6 +29,7 @@ const uint8_t LEDPin = 19;
 const uint8_t xshutPins[] = {4, 5, 2, 17, 0, 16};
 
 // Sensor distance threshold
+// uint16_t sensor_threshold = 950;
 uint16_t sensor_threshold = 10;
 
 // // I2C pins 
@@ -54,18 +56,21 @@ void sensor_init(const uint8_t count, const uint8_t xshut_arr[6]) {
     digitalWrite(xshut_arr[i], LOW);
   }
 
+  delay(10);
+
   // Enable, initialize and start each sensor
   for (int i=0; i < count; i++) {
     pinMode(xshut_arr[i], INPUT); // Force all XSHUT pins to logic HIGH
     delay(10);
 
     // VL53L1X configuration
-    sensors[i].setTimeout(500);                // Set timeout for sensor reading if sensor not ready
-    sensors[i].setROICenter(199);              // Set Region-of-Interest center for field of vision (default SPAD 199)
-    sensors[i].setROISize(10, 10);             // Set Region-of-interest size for sensor (16x16 default, 4x4 min)
+    sensors[i].setTimeout(500);      // Set timeout for sensor reading if sensor not ready
+    sensors[i].setROICenter(199);    // Set Region-of-Interest center for field of vision (default SPAD 199)
+    sensors[i].setROISize(10, 10);   // Set Region-of-interest size for sensor (16x16 default, 4x4 min)
 
     if (!sensors[i].init()) {
       Serial.print("Failed to detect and initialize sensor");
+      ESP.restart();
       Serial.println(i);
       while (1);
     }
@@ -82,7 +87,7 @@ void sensor_init(const uint8_t count, const uint8_t xshut_arr[6]) {
 // Function for idle state LED control
 void pulse_idle() {
   // Increase the LED brightness 
-  for(int dutyCycle = 30; dutyCycle <= 180; dutyCycle++){   
+  for(int dutyCycle = 30; dutyCycle <= 120; dutyCycle++){   
     ledcWrite(PWM_channel, dutyCycle);
     vTaskDelay(30 / portTICK_PERIOD_MS);
   }
@@ -90,7 +95,7 @@ void pulse_idle() {
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
   // Decrease the LED brightness 
-  for (int dutyCycle = 180; dutyCycle >= 30; dutyCycle--) {
+  for (int dutyCycle = 120; dutyCycle >= 30; dutyCycle--) {
     ledcWrite(PWM_channel, dutyCycle);   
     // delay(30);
     vTaskDelay(30 / portTICK_PERIOD_MS);
@@ -108,16 +113,16 @@ void pulse_awaken() {
     vTaskDelay(20 / portTICK_PERIOD_MS);
   }
   // delay(1000);
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
+  vTaskDelay(1500 / portTICK_PERIOD_MS);
 
   // Decrease the LED brightness 
   for (int dutyCycle = 255; dutyCycle >= 30; dutyCycle--) {
     ledcWrite(PWM_channel, dutyCycle);   
     // delay(5);
-    vTaskDelay(5 / portTICK_PERIOD_MS);
+    vTaskDelay(20 / portTICK_PERIOD_MS);
   }
   // delay(1000);
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
+  //vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
 
@@ -128,7 +133,7 @@ void task_1(void* pvParameters) {
     pulse_idle();
     #ifdef DEBUG
       Serial.println("Task 1 active");
-      vTaskDelay(500 /portTICK_PERIOD_MS);
+      vTaskDelay(50 /portTICK_PERIOD_MS);
     #endif
   }
 }
@@ -139,17 +144,31 @@ void task_2(void* pvParameters) {
     for (int i=0; i < sensor_count; i++) {
       uint16_t sensor_val = sensors[i].read();
 
+      // Check for time outs (I2C connection loss etc.)
+      if (sensors[i].timeoutOccurred()) {
+        ESP.restart();
+      }
+
+      #ifdef DEBUG
+        Serial.println("Task 2 active");
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+      #endif
+
       // Check if threshold is crossed (person has triggered sensor)
       // If triggered, suspend task_1, call pulse_awaken() sequence, resume task_1
       if (sensor_val < sensor_threshold) {
-        vTaskSuspend(handle_1);
-        pulse_awaken();
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
-        vTaskResume(handle_1);
-        #ifdef DEBUG
-          Serial.println("Sensor triggered");
-          vTaskDelay(500 / portTICK_PERIOD_MS);
-        #endif
+        //vTaskDelay(20);
+        //uint16_t sensor_val = sensors[i].read();
+        if (sensor_val < sensor_threshold) {
+          vTaskSuspend(handle_1);
+          pulse_awaken();
+          vTaskDelay(20 / portTICK_PERIOD_MS);
+          vTaskResume(handle_1);
+          #ifdef DEBUG
+            Serial.println("Sensor triggered");
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+          #endif
+        }
       }
 
       #ifdef DEBUG
@@ -171,7 +190,7 @@ void setup() {
 
   // I2C configuration
   Wire.begin();
-  Wire.setClock(200000); // Set I2C speed in Hz
+  Wire.setClock(100000); // Set I2C speed in Hz
 
   // PWM configuration (using built in ESP32 led-c)
   ledcSetup(PWM_channel, PWM_freq, PWM_res);
@@ -188,7 +207,7 @@ void setup() {
     "task 1",  // Label
     2048,      // Stack memory size
     NULL,      // Task input parameter
-    0,         // Priority
+    1,         // Priority
     &handle_1, // Pointer to task handle
     0          // CPU Core
   );
@@ -202,7 +221,7 @@ void setup() {
     NULL,      // Task input parameter
     1,         // Priority
     &handle_2, // Pointer to task handle
-    0          // CPU Core
+    1          // CPU Core
   );
 }
 
