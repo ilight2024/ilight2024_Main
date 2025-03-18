@@ -12,3 +12,4 @@ Integrated firmware and hardware resources for ilight2024, to be deployed on act
 - Folder (PlatformIO version)
 
 
+![Uploading image.png…]()
